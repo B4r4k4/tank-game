@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Khartoum 3D</title>
+<style>
+  html,body{margin:0;height:100%;background:#0d1117;overflow:hidden;font-family:"Segoe UI",Tahoma,sans-serif}
+  canvas{display:block}
+  #ui{position:fixed;top:12px;right:12px;background:rgba(13,17,23,.82);color:#e6edf3;padding:12px 14px;border-radius:10px;font-size:13px;line-height:1.7;min-width:220px;backdrop-filter:blur(6px);border:1px solid #30363d}
+  #ui h1{font-size:15px;margin:0 0 6px}
+  #ui label{display:flex;justify-content:space-between;gap:10px;align-items:center}
+  #ui input[type=range]{width:110px}
+  #ui small{color:#8b949e}
+  .lbl{position:fixed;transform:translate(-50%,-100%);color:#fff;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;pointer-events:none;text-shadow:0 1px 3px #000,0 0 6px #000;padding-bottom:6px}
+  .lbl::after{content:"";position:absolute;left:50%;bottom:0;width:2px;height:6px;background:#f2b134;transform:translateX(-50%)}
+  #loading{position:fixed;inset:0;display:grid;place-items:center;color:#e6edf3;font-size:16px}
+</style>
+</head>
+<body>
+<div id="loading">جارٍ بناء المشهد…</div>
+<div id="ui">
+  <h1>الخرطوم — مشهد ثلاثي الأبعاد</h1>
+  <label>ارتفاع المباني <input id="hScale" type="range" min="0.2" max="3" step="0.05" value="1"></label>
+  <label>المباني التلقائية <input id="auto" type="checkbox" checked></label>
+  <label>الأشجار <input id="trees" type="checkbox" checked></label>
+  <label>التسميات <input id="labels" type="checkbox" checked></label>
+  <label>دوران تلقائي <input id="spin" type="checkbox"></label>
+  <small>اسحب للدوران · عجلة الفأرة للتكبير · زر يمين للتحريك</small>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- source image: crop the map area out of the browser screenshot ----------
+const SRC = 'assets/maps/khartoum-sat.png';
+const CROP = { x:0, y:258, w:1920, h:717 };   // Google Earth viewport inside the screenshot
+const PX = 10;                                // image pixels per world unit (≈ 9.4 m)
+const W = CROP.w / PX, D = CROP.h / PX;       // world size
+// image px (screenshot coords) -> world
+const wx = px => (px - CROP.x - CROP.w/2) / PX;
+const wz = py => (py - CROP.y - CROP.h/2) / PX;
+
+const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = SRC; });
+
+const cv = document.createElement('canvas'); cv.width = CROP.w; cv.height = CROP.h;
+const g = cv.getContext('2d', { willReadFrequently:true });
+g.drawImage(img, CROP.x, CROP.y, CROP.w, CROP.h, 0, 0, CROP.w, CROP.h);
+
+// Hide Google UI overlays (labels, minimap, buttons) by patching with nearby ground.
+// rect = [x,y,w,h] in screenshot coords, src offset = [dx,dy]
+const patches = [
+  [636,392,268,90,  0,-95],   // General Command label
+  [592,664,196,94,  0, 96],   // Air Force HQ label
+  [1022,830,240,100, 0,-110], // Admission label
+  [748,500,42,42,   -44,0],   // pin
+  [668,610,42,42,   -44,0],   // pin
+  [1266,856,44,44,  44,0],    // pin
+  [20,855,104,100,  110,0],   // minimap
+  [1484,888,416,80, 0,-90],   // nav buttons
+];
+for (const [x,y,w,h,dx,dy] of patches)
+  g.drawImage(cv, x+dx-CROP.x, y+dy-CROP.y-0, w, h, x-CROP.x, y-CROP.y, w, h);
+
+const groundTex = new THREE.CanvasTexture(cv);
+groundTex.colorSpace = THREE.SRGBColorSpace;
+groundTex.anisotropy = 8;
+const pixels = g.getImageData(0, 0, CROP.w, CROP.h).data;
+const pix = (x, y) => { x = Math.max(0, Math.min(CROP.w-1, x|0)); y = Math.max(0, Math.min(CROP.h-1, y|0)); const i = (y*CROP.w + x)*4; return [pixels[i], pixels[i+1], pixels[i+2]]; };
+
+// ---------- renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xc9d6e3);
+scene.fog = new THREE.Fog(0xc9d6e3, 160, 380);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.5, 1000);
+camera.position.set(-20, 70, 85);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(-15, 0, 0);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.47;
+controls.minDistance = 8; controls.maxDistance = 260;
+
+scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x6b5233, 0.9));
+const sun = new THREE.DirectionalLight(0xfff0d6, 2.2);
+sun.position.set(-60, 90, -45);           // matches the NW-lit shadows in the photo
+sun.castShadow = true;
+sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left:-110, right:110, top:60, bottom:-60, near:1, far:300 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+// ground: the satellite image + a desert skirt around it
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(W, D), new THREE.MeshStandardMaterial({ map:groundTex, roughness:1 }));
+ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; scene.add(ground);
+const skirt = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), new THREE.MeshStandardMaterial({ color:0x8c6a45, roughness:1 }));
+skirt.rotation.x = -Math.PI/2; skirt.position.y = -0.02; scene.add(skirt);
+
+// ---------- building geometry builder: roofs/walls take their colour from the photo ----------
+const uvOf = (x, z) => [ (x + W/2) / W, 1 - (z + D/2) / D ];
+
+class Builder {
+  constructor(){ this.pos=[]; this.uv=[]; this.col=[]; this.idx=[]; }
+  quad(a,b,c,d, uvs, shade){
+    const n = this.pos.length/3;
+    for (const [p,u] of [[a,uvs[0]],[b,uvs[1]],[c,uvs[2]],[d,uvs[3]]]){ this.pos.push(...p); this.uv.push(...u); this.col.push(shade,shade,shade); }
+    this.idx.push(n,n+1,n+2, n,n+2,n+3);
+  }
+  // extrude a polygon (array of [x,z], CCW seen from above) from y0 to y1
+  prism(poly, y0, y1, wallShade=0.78){
+    // walls: sample the roof edge colour so walls look like the building
+    for (let i=0;i<poly.length;i++){
+      const [x1,z1] = poly[i], [x2,z2] = poly[(i+1)%poly.length];
+      const u1 = uvOf(x1,z1), u2 = uvOf(x2,z2);
+      this.quad([x1,y0,z1],[x2,y0,z2],[x2,y1,z2],[x1,y1,z1], [u1,u2,u2,u1], wallShade);
+    }
+    // roof (fan triangulation; fine for convex shapes)
+    const n = this.pos.length/3;
+    for (const [x,z] of poly){ this.pos.push(x,y1,z); this.uv.push(...uvOf(x,z)); this.col.push(1,1,1); }
+    for (let i=1;i<poly.length-1;i++) this.idx.push(n, n+i+1, n+i);
+  }
+  mesh(mat){
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(this.pos,3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv,2));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(this.col,3));
+    geo.setIndex(this.idx); geo.computeVertexNormals();
+    const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true; return m;
+  }
+}
+const bMat = new THREE.MeshStandardMaterial({ map:groundTex, vertexColors:true, roughness:.85, side:THREE.DoubleSide });
+
+// rectangle in screenshot px (centre cx,cy, size w,h, rotation deg) -> world polygon
+const rect = (cx,cy,w,h,deg=0) => {
+  const a = deg*Math.PI/180, c=Math.cos(a), s=Math.sin(a);
+  return [[-1,-1],[1,-1],[1,1],[-1,1]].map(([u,v]) => { const x=u*w/2, y=v*h/2; return [wx(cx + x*c - y*s), wz(cy + x*s + y*c)]; });
+};
+const circle = (cx,cy,r,seg=28) => Array.from({length:seg},(_,i)=>{ const a=-i/seg*Math.PI*2; return [wx(cx+Math.cos(a)*r), wz(cy+Math.sin(a)*r)]; });
+const polyPx = pts => pts.map(([x,y]) => [wx(x), wz(y)]);
+
+// ---------- hand-placed landmarks (heights in world units, 1u ≈ 9.4 m) ----------
+const landmarks = new Builder();
+const L = []; // [poly, height]
+// General Command – round stepped tower
+L.push([circle(788,565,40), 1.4], [circle(788,565,30), 3.2], [circle(788,562,20), 5.2], [circle(798,600,16), 2.2]);
+// Air Force HQ – ship-shaped building
+L.push([polyPx([[422,712],[452,694],[512,690],[522,700],[522,735],[512,744],[452,742]]), 1.8]);
+L.push([polyPx([[470,700],[505,700],[505,734],[470,734]]), 2.8]);
+// big white hangar left & neighbours
+L.push([polyPx([[428,570],[536,588],[528,612],[494,624],[414,612],[408,590]]), 1.4]);
+L.push([rect(92,725,40,64,0), 1.1], [rect(545,605,12,60,0), 0.9]);
+// multi-storey block north of the road
+L.push([polyPx([[985,360],[1045,350],[1068,405],[1012,420]]), 3.0]);
+L.push([rect(1010,395,30,30,10), 3.8]);
+// grey shed top centre + long white sheds
+L.push([rect(895,325,95,55,-28), 1.0], [rect(855,480,70,16,-28), 0.6], [rect(935,355,90,10,-28), 0.5], [rect(1010,322,40,10,-28), 0.5]);
+// tall buildings east
+L.push([rect(1532,412,40,46,0), 3.2], [rect(1575,385,40,30,0), 1.6], [rect(1540,305,40,36,0), 1.5]);
+// admin & misc mid-rise
+L.push([rect(1225,745,70,50,0), 1.6], [rect(1440,595,40,40,0), 1.4], [rect(1165,632,50,40,0), 1.2], [rect(1830,612,46,40,0), 1.4]);
+L.push([rect(340,665,40,35,0), 0.9], [rect(195,740,30,55,0), 0.8], [rect(830,720,40,30,0), 0.8]);
+for (const [p,h] of L) landmarks.prism(p, 0, h);
+const landmarkMesh = landmarks.mesh(bMat); scene.add(landmarkMesh);
+
+// keep auto-generated houses out of landmarks and the main roads
+const blockers = [...L.map(([p]) => p)];
+const roadBand = (x1,y1,x2,y2,halfW) => ({x1,y1,x2,y2,halfW});
+const roads = [
+  roadBand(770,975,1540,258,38),    // main diagonal avenue
+  roadBand(0,825,780,830,18),       // southern road
+  roadBand(960,650,1920,690,16),    // eastern cross road
+  roadBand(1490,258,1470,975,14),   // north–south street
+  roadBand(640,975,980,640,20),     // flyover ramp
+];
+const distSeg = (px,py,r) => { const dx=r.x2-r.x1, dy=r.y2-r.y1; const t=Math.max(0,Math.min(1,((px-r.x1)*dx+(py-r.y1)*dy)/(dx*dx+dy*dy))); return Math.hypot(px-r.x1-t*dx, py-r.y1-t*dy); };
+const inPoly = (x,z,poly) => { let ins=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){ const [xi,zi]=poly[i],[xj,zj]=poly[j]; if(((zi>z)!==(zj>z)) && x<(xj-xi)*(z-zi)/(zj-zi)+xi) ins=!ins; } return ins; };
+const lum = ([r,g,b]) => 0.299*r + 0.587*g + 0.114*b;
+
+// ---------- auto-generated houses: bright rooftops that stand out from the local ground ----------
+const CELL = 11;
+const auto = new Builder();
+const treeSpots = [];
+const rng = (() => { let s = 1234567; return () => (s = (s*16807) % 2147483647) / 2147483647; })();
+for (let y = CELL; y < CROP.h - CELL; y += CELL){
+  for (let x = CELL; x < CROP.w - CELL; x += CELL){
+    // cell stats
+    let sum=0, sumG=0, sumR=0, n=0;
+    for (let yy=0; yy<CELL; yy+=2) for (let xx=0; xx<CELL; xx+=2){ const p=pix(x+xx,y+yy); sum+=lum(p); sumR+=p[0]; sumG+=p[1]; n++; }
+    const m = sum/n;
+    let ring=0, rn=0;
+    for (let a=0;a<12;a++){ const ang=a/12*Math.PI*2; ring += lum(pix(x+CELL/2+Math.cos(ang)*CELL*1.6, y+CELL/2+Math.sin(ang)*CELL*1.6)); rn++; }
+    ring/=rn;
+    const sx = x + CROP.x + CELL/2, sy = y + CROP.y + CELL/2;
+    const X = wx(sx), Z = wz(sy);
+    if (roads.some(r => distSeg(sx,sy,r) < r.halfW)) continue;
+    if (blockers.some(p => inPoly(X,Z,p))) continue;
+    // vegetation: darker cells where green ≥ red
+    if (sumG/n > sumR/n*0.97 && m < 120){ treeSpots.push([X,Z, 0.35+rng()*0.35]); continue; }
+    // rooftop: noticeably brighter than surroundings
+    if (m > 150 && m > ring*1.12){
+      const w = CELL/PX*(0.75+rng()*0.25), d = CELL/PX*(0.75+rng()*0.25);
+      const h = 0.35 + rng()*0.35 + (m>200 ? 0.25 : 0);
+      auto.prism([[X-w/2,Z-d/2],[X+w/2,Z-d/2],[X+w/2,Z+d/2],[X-w/2,Z+d/2]].reverse(), 0, h);
+    }
+  }
+}
+const autoMesh = auto.mesh(bMat); scene.add(autoMesh);
+
+// ---------- trees ----------
+const treeGeo = new THREE.IcosahedronGeometry(1, 0);
+const trees = new THREE.InstancedMesh(treeGeo, new THREE.MeshStandardMaterial({ color:0x4f6b32, roughness:.9, flatShading:true }), treeSpots.length);
+{ const o = new THREE.Object3D(), c = new THREE.Color();
+  treeSpots.forEach(([x,z,s],i) => { o.position.set(x, s*0.9, z); o.scale.set(s, s*1.1, s); o.rotation.y = rng()*6; o.updateMatrix(); trees.setMatrixAt(i, o.matrix); c.setHSL(0.24+rng()*0.05, 0.35, 0.22+rng()*0.1); trees.setColorAt(i, c); });
+}
+trees.castShadow = true; scene.add(trees);
+
+// ---------- elevated flyover on the main avenue ----------
+{
+  const deck = new THREE.MeshStandardMaterial({ color:0x9a948a, roughness:.8 });
+  const pts = [[785,975],[805,870],[860,760],[965,660]].map(([x,y]) => new THREE.Vector3(wx(x), 0, wz(y)));
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const N = 40;
+  for (let i=0;i<N;i++){
+    const t = i/N, p = curve.getPoint(t+0.5/N), tan = curve.getTangent(t+0.5/N);
+    const h = Math.sin(Math.min(1, t*1.6)*Math.PI*0.5) * 0.9 * (t>0.85 ? (1-t)/0.15 : 1);
+    const seg = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.18, curve.getLength()/N+0.05), deck);
+    seg.position.set(p.x, h+0.09, p.z); seg.rotation.y = Math.atan2(tan.x, tan.z);
+    seg.castShadow = seg.receiveShadow = true; scene.add(seg);
+    if (i%4===2 && h>0.3){ const col = new THREE.Mesh(new THREE.CylinderGeometry(.14,.14,h,8), deck); col.position.set(p.x, h/2, p.z); col.castShadow=true; scene.add(col); }
+  }
+}
+
+// ---------- labels ----------
+const labelDefs = [
+  ['القيادة العامة للقوات المسلحة', 788, 565, 5.6],
+  ['رئاسة أركان القوات الجوية', 470, 715, 3.0],
+  ['الإدارة العامة للقبول', 1225, 745, 1.8],
+];
+const labelEls = labelDefs.map(([t,x,y,h]) => { const el = document.createElement('div'); el.className='lbl'; el.textContent=t; document.body.appendChild(el); return { el, p:new THREE.Vector3(wx(x), h, wz(y)) }; });
+
+// ---------- UI ----------
+const $ = id => document.getElementById(id);
+$('hScale').oninput = e => { const s = +e.target.value; landmarkMesh.scale.y = autoMesh.scale.y = s; labelEls.forEach((l,i)=> l.p.y = labelDefs[i][3]*s); };
+$('auto').onchange  = e => autoMesh.visible = e.target.checked;
+$('trees').onchange = e => trees.visible = e.target.checked;
+$('spin').onchange  = e => controls.autoRotate = e.target.checked;
+controls.autoRotateSpeed = 0.6;
+addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+$('loading').remove();
+
+const v = new THREE.Vector3();
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+  const show = $('labels').checked;
+  for (const l of labelEls){
+    v.copy(l.p).project(camera);
+    const vis = show && v.z < 1 && Math.abs(v.x) < 1.1 && Math.abs(v.y) < 1.1;
+    l.el.style.display = vis ? 'block' : 'none';
+    if (vis){ l.el.style.left = (v.x*.5+.5)*innerWidth+'px'; l.el.style.top = (-v.y*.5+.5)*innerHeight+'px'; }
+  }
+});
+</script>
+</body>
+</html>
